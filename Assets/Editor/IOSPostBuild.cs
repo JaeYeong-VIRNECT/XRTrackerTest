@@ -1,10 +1,13 @@
 using System.IO;
 using UnityEditor;
 using UnityEditor.Callbacks;
+#if UNITY_EDITOR_OSX
 using UnityEditor.iOS.Xcode;
+#endif
 
 namespace XRTrackerBuild
 {
+#if UNITY_EDITOR_OSX
     public static class IOSPostBuild
     {
         [PostProcessBuild(1000)]
@@ -34,4 +37,5 @@ namespace XRTrackerBuild
             project.AddFrameworkToProject(targetGuid, "IOSurface.framework", false);
         }
     }
+#endif
 }
