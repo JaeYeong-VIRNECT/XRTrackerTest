@@ -1,0 +1,165 @@
+using UnityEngine;
+
+[DefaultExecutionOrder(20000)]
+public class TouchManipulator : MonoBehaviour
+{
+    [SerializeField] private Camera cam;
+    [SerializeField] private float rotateSpeed = 0.3f;
+    [SerializeField] private float mouseRotateSpeed = 0.3f;
+    [SerializeField] private float mouseMoveSpeed = 1f;
+    [SerializeField] private float scrollScaleSpeed = 0.1f;
+    [SerializeField] private float minScale = 0.05f;
+    [SerializeField] private float maxScale = 20f;
+    [SerializeField, Tooltip("Ignore touches within this many px of top/bottom edges (watermark, HUD).")]
+    private int edgeIgnorePixels = 140;
+    [SerializeField, Tooltip("Ignore touches within this many px of the RIGHT edge (runtime controls panel).")]
+    private int rightEdgeIgnorePixels = 420;
+    [SerializeField] private float keyRotateDegPerSec = 90f;
+    [SerializeField] private float keyScalePerSec = 0.8f;
+    [SerializeField] private float keyMovePerSec = 0.3f;
+
+    Vector3 _pivotLocal;
+    float _pinchPrev;
+    Vector2 _midPrev;
+    bool _twoActive;
+    Vector3 _mousePrev;
+
+    void Start()
+    {
+        RecomputePivot();
+    }
+
+    public void RecomputePivot()
+    {
+        var renderers = GetComponentsInChildren<Renderer>();
+        if (renderers.Length == 0) { _pivotLocal = Vector3.zero; return; }
+        var b = renderers[0].bounds;
+        for (int i = 1; i < renderers.Length; i++) b.Encapsulate(renderers[i].bounds);
+        _pivotLocal = transform.InverseTransformPoint(b.center);
+    }
+
+    Vector3 PivotWorld => transform.TransformPoint(_pivotLocal);
+
+    bool InIgnoreEdge(Vector2 p)
+    {
+        if (p.y < edgeIgnorePixels || p.y > Screen.height - edgeIgnorePixels) return true;
+        if (p.x > Screen.width - rightEdgeIgnorePixels) return true;
+        return false;
+    }
+
+    public void SetRightEdgeIgnorePixels(int pixels)
+    {
+        rightEdgeIgnorePixels = Mathf.Max(0, pixels);
+    }
+
+    void LateUpdate()
+    {
+        if (cam == null) cam = Camera.main;
+        if (cam == null) return;
+
+        HandleKeys();
+
+        if (Input.touchCount > 0) HandleTouch();
+        else HandleMouse();
+    }
+
+    void HandleKeys()
+    {
+        float dt = Time.unscaledDeltaTime;
+        Vector3 piv = PivotWorld;
+
+        if (Input.GetKey(KeyCode.Q))
+            transform.RotateAround(piv, cam.transform.up, -keyRotateDegPerSec * dt);
+        if (Input.GetKey(KeyCode.E))
+            transform.RotateAround(piv, cam.transform.up, keyRotateDegPerSec * dt);
+        if (Input.GetKey(KeyCode.R))
+            transform.RotateAround(piv, cam.transform.right, -keyRotateDegPerSec * dt);
+        if (Input.GetKey(KeyCode.F))
+            transform.RotateAround(piv, cam.transform.right, keyRotateDegPerSec * dt);
+
+        float scaleStep = 1f + keyScalePerSec * dt;
+        if (Input.GetKey(KeyCode.Equals) || Input.GetKey(KeyCode.KeypadPlus))
+            transform.localScale = Vector3.one * Mathf.Clamp(transform.localScale.x * scaleStep, minScale, maxScale);
+        if (Input.GetKey(KeyCode.Minus) || Input.GetKey(KeyCode.KeypadMinus))
+            transform.localScale = Vector3.one * Mathf.Clamp(transform.localScale.x / scaleStep, minScale, maxScale);
+
+        Vector3 move = Vector3.zero;
+        if (Input.GetKey(KeyCode.W)) move += cam.transform.up;
+        if (Input.GetKey(KeyCode.S)) move -= cam.transform.up;
+        if (Input.GetKey(KeyCode.A)) move -= cam.transform.right;
+        if (Input.GetKey(KeyCode.D)) move += cam.transform.right;
+        if (move.sqrMagnitude > 0.001f)
+            transform.position += move.normalized * keyMovePerSec * dt;
+    }
+
+    void HandleTouch()
+    {
+        int n = Input.touchCount;
+        if (n >= 2)
+        {
+            Touch a = Input.GetTouch(0), b = Input.GetTouch(1);
+            float d = Vector2.Distance(a.position, b.position);
+            Vector2 mid = (a.position + b.position) * 0.5f;
+
+            if (!_twoActive || a.phase == TouchPhase.Began || b.phase == TouchPhase.Began)
+            { _pinchPrev = d; _midPrev = mid; _twoActive = true; return; }
+
+            float scaleRatio = d / Mathf.Max(_pinchPrev, 0.01f);
+            float s = Mathf.Clamp(transform.localScale.x * scaleRatio, minScale, maxScale);
+            transform.localScale = Vector3.one * s;
+
+            Vector3 screen = cam.WorldToScreenPoint(PivotWorld);
+            screen.x += (mid - _midPrev).x;
+            screen.y += (mid - _midPrev).y;
+            Vector3 newPivotWorld = cam.ScreenToWorldPoint(screen);
+            transform.position += (newPivotWorld - PivotWorld);
+
+            _pinchPrev = d; _midPrev = mid;
+        }
+        else if (n == 1)
+        {
+            _twoActive = false; _pinchPrev = 0f;
+            Touch t = Input.GetTouch(0);
+            if (t.phase == TouchPhase.Moved && !InIgnoreEdge(t.position))
+            {
+                Vector3 piv = PivotWorld;
+                transform.RotateAround(piv, cam.transform.up, -t.deltaPosition.x * rotateSpeed);
+                transform.RotateAround(piv, cam.transform.right, t.deltaPosition.y * rotateSpeed);
+            }
+        }
+        else { _twoActive = false; _pinchPrev = 0f; }
+    }
+
+    void HandleMouse()
+    {
+        Vector3 mouse = Input.mousePosition;
+        if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1) || Input.GetMouseButtonDown(2))
+            _mousePrev = mouse;
+
+        Vector3 delta = mouse - _mousePrev;
+
+        if (Input.GetMouseButton(0) && !InIgnoreEdge(mouse))
+        {
+            Vector3 piv = PivotWorld;
+            transform.RotateAround(piv, cam.transform.up, -delta.x * mouseRotateSpeed);
+            transform.RotateAround(piv, cam.transform.right, delta.y * mouseRotateSpeed);
+        }
+        else if (Input.GetMouseButton(1) || Input.GetMouseButton(2))
+        {
+            Vector3 screen = cam.WorldToScreenPoint(PivotWorld);
+            screen.x += delta.x * mouseMoveSpeed;
+            screen.y += delta.y * mouseMoveSpeed;
+            Vector3 newPivotWorld = cam.ScreenToWorldPoint(screen);
+            transform.position += (newPivotWorld - PivotWorld);
+        }
+
+        float scroll = Input.GetAxis("Mouse ScrollWheel");
+        if (Mathf.Abs(scroll) > 0.0001f)
+        {
+            float s = Mathf.Clamp(transform.localScale.x * (1f + scroll * scrollScaleSpeed * 10f), minScale, maxScale);
+            transform.localScale = Vector3.one * s;
+        }
+
+        _mousePrev = mouse;
+    }
+}
