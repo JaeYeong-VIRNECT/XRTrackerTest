@@ -200,8 +200,6 @@ MonoBehaviour:
   _positionStability: 60000
   _targetSize: 0.3
   _placementDistance: 0.6
-  _minScale: 0.001
-  _maxScale: 50
   _creaseAngle: 60
   _showInternalEdges: 1
   _hideSourceMesh: 1

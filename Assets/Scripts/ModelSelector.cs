@@ -11,7 +11,6 @@ using IV.FormulaTracker;
 /// </summary>
 public class ModelSelector : MonoBehaviour
 {
-    const string VisualPivotName = "MeshVisualPivot";
 
     [Header("Tracking")]
     [Tooltip("Tracking method for loaded models.")]
@@ -35,12 +34,6 @@ public class ModelSelector : MonoBehaviour
 
     [Tooltip("Distance from camera to place the model center.")]
     [SerializeField] private float _placementDistance = 0.6f;
-
-    [Tooltip("Minimum scale clamp.")]
-    [SerializeField] private float _minScale = 0.001f;
-
-    [Tooltip("Maximum scale clamp.")]
-    [SerializeField] private float _maxScale = 50f;
 
     [Header("Edge Outline")]
     [Tooltip("Crease angle threshold for edge detection.")]
@@ -71,6 +64,9 @@ public class ModelSelector : MonoBehaviour
 
     public event System.Action<string, int> OnModelChanged;
 
+    // Debug overlay
+    private string _debugText = "Waiting...";
+
     private void Start()
     {
         LoadModelList();
@@ -78,12 +74,45 @@ public class ModelSelector : MonoBehaviour
         if (_modelNames.Count > 0)
         {
             Debug.Log($"[ModelSelector] Loaded {_modelNames.Count} models. Selecting first model.");
-            LoadModel(0);
+            StartCoroutine(LoadFirstModelDeferred());
         }
         else
         {
             Debug.LogWarning("[ModelSelector] No models found in Resources folder.");
         }
+    }
+
+    private IEnumerator LoadFirstModelDeferred()
+    {
+        // Wait until XRTrackerManager is fully initialized (FT_InitInjected complete)
+        float timeout = Time.time + 10f;
+        while (Time.time < timeout)
+        {
+            var mgr = XRTrackerManager.Instance;
+            if (mgr != null && mgr.IsInitialized)
+                break;
+            yield return null;
+        }
+
+        // Also wait for camera to be ready
+        Camera cam = null;
+        timeout = Time.time + 3f;
+        while (Time.time < timeout)
+        {
+            cam = Camera.main;
+            if (cam == null)
+            {
+                var mgr = XRTrackerManager.Instance;
+                if (mgr != null && mgr.MainCamera != null)
+                    cam = mgr.MainCamera;
+            }
+            if (cam != null && cam.fieldOfView > 1f)
+                break;
+            yield return null;
+        }
+
+        Debug.Log($"[ModelSelector] Ready — tracker initialized, camera fov={cam?.fieldOfView:F1}");
+        LoadModel(0);
     }
 
     private void LoadModelList()
@@ -195,6 +224,9 @@ public class ModelSelector : MonoBehaviour
         _currentModelInstance.transform.position = Vector3.zero;
         _currentModelInstance.transform.rotation = Quaternion.identity;
 
+        // Center pivot on bounds center — shift children so bounds center aligns with transform origin
+        CenterPivotOnBounds(_currentModelInstance);
+
         SetupModel(_currentModelInstance);
 
         Debug.Log($"[ModelSelector] Loaded model [{_currentIndex + 1}/{_modelNames.Count}]: {modelName}");
@@ -212,33 +244,18 @@ public class ModelSelector : MonoBehaviour
             return;
         }
 
-        // 1. Create MeshVisualPivot (reparent visual children under a centered pivot)
-        var visualPivot = EnsureVisualPivot(modelRoot);
-
-        // 2. Scale model to target size based on bounds
-        ScaleModelToTargetSize(modelRoot);
-
-        // 3. Place model in front of camera
+        // 1. Place model in front of camera
         PlaceInFrontOfCamera(modelRoot);
 
-        // Re-collect filters after reparenting
-        filters = modelRoot.GetComponentsInChildren<MeshFilter>(true)
-            .Where(f => f.sharedMesh != null).ToList();
-
-        // 4. Create viewpoint for tracking initial pose
-        var bounds = ComputeBounds(modelRoot);
-        float distance = Mathf.Max(bounds.size.magnitude * 0.8f, _placementDistance);
-
+        // 2. Create viewpoint for tracking initial pose
+        // Viewpoint = where the camera is relative to the model during detection.
+        // Must match actual placement distance, NOT model size.
         var viewpoint = new GameObject("Viewpoint");
         viewpoint.transform.SetParent(modelRoot.transform, false);
-        viewpoint.transform.localPosition = modelRoot.transform.InverseTransformPoint(bounds.center)
-            + new Vector3(0, bounds.extents.y * 0.3f, -distance);
-        viewpoint.transform.LookAt(bounds.center);
+        viewpoint.transform.localPosition = new Vector3(0, 0, -_placementDistance);
+        viewpoint.transform.localRotation = Quaternion.identity;
 
-        // 5. Add TrackedBody (disabled first to prevent premature RegisterBody)
-        // AddComponent triggers OnEnable → RegisterBody immediately,
-        // but MeshFilters isn't set yet → MeshCombiner.Validate fails → registration aborted.
-        // Original scene worked because MeshFilters was serialized before OnEnable.
+        // 3. Add TrackedBody (disabled first to prevent premature RegisterBody)
         modelRoot.SetActive(false);
         var body = modelRoot.AddComponent<TrackedBody>();
         body.BodyId = modelRoot.name;
@@ -255,61 +272,83 @@ public class ModelSelector : MonoBehaviour
         body.UseCustomStopThreshold = true;
         body.CustomQualityToStop = 0.5f;
         modelRoot.SetActive(true);
-        // Now OnEnable fires with all properties set → RegisterBody succeeds
 
-        // CRITICAL: Recompute initial pose AFTER setting all properties.
-        // AddComponent triggers OnEnable → ComputeInitialPose() before properties are set,
-        // so the initial camera-relative pose is wrong. Re-set it now with the correct viewpoint.
         body.SetInitialPose(viewpoint.transform);
 
-        // When tracking starts, restore the original auto-calculated scale.
-        // User may have pinch-scaled during detection, but the tracked pose must
-        // match the real-world object size.
-        Vector3 originalScale = modelRoot.transform.localScale;
-        body.OnStartTracking.AddListener(() =>
-        {
-            modelRoot.transform.localScale = originalScale;
-            Debug.Log($"[ModelSelector] Tracking started — scale restored to {originalScale}");
-        });
+        Debug.Log($"[ModelSelector] Registered '{modelRoot.name}' with lossyScale={modelRoot.transform.lossyScale.x:F6} (geometry_unit_in_meter)");
 
-        // 6. Add TrackedBodyOutline (edge-only rendering)
+        // 4. Add TrackedBodyOutline (edge-only rendering)
         var outline = modelRoot.AddComponent<TrackedBodyOutline>();
-        // Set outline properties EXCEPT _hideSourceMesh (set that after edges are built)
         SetFieldSafe(outline, "_creaseAngle", _creaseAngle);
         SetFieldSafe(outline, "_showInternalEdges", _showInternalEdges);
         SetFieldSafe(outline, "_edgeWidth", _edgeWidth);
         SetFieldSafe(outline, "_edgeColor", _edgeColor);
-        // Mark dirty so edge mesh rebuilds with new crease angle
         var setDirtyMethod = outline.GetType().GetMethod("SetDirty",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
         if (setDirtyMethod != null) setDirtyMethod.Invoke(outline, null);
 
-        // Defer source mesh hiding: let EdgeOutlineRenderer build edges first (needs 1-2 frames)
         if (_hideSourceMesh)
             StartCoroutine(DeferHideSourceMesh(outline));
 
-        // 7. Add TouchManipulator for user interaction (pinch-to-scale, single-finger rotate)
+        // 5. Add TouchManipulator for user interaction
         modelRoot.AddComponent<TouchManipulator>();
 
-        // 8. Add TrackingStatsHUD (detection rate, status, progress bar)
+        // 6. Add TrackingStatsHUD
         modelRoot.AddComponent<TrackingStatsHUD>();
+    }
+
+    /// <summary>
+    /// Shift all children so that the bounds center aligns with the root transform origin.
+    /// This makes the model rotate/place around its visual center without changing geometry.
+    /// </summary>
+    private void CenterPivotOnBounds(GameObject modelRoot)
+    {
+        // Use MeshFilter bounds (reliable before first render, unlike Renderer.bounds)
+        var filters = modelRoot.GetComponentsInChildren<MeshFilter>(true);
+        if (filters.Length == 0) return;
+
+        // Compute world-space bounds from mesh data
+        bool first = true;
+        Bounds bounds = new Bounds();
+        foreach (var f in filters)
+        {
+            if (f.sharedMesh == null) continue;
+            var mb = f.sharedMesh.bounds;
+            // Transform all 8 corners to world space
+            Vector3 min = mb.min, max = mb.max;
+            Vector3[] corners = {
+                new Vector3(min.x, min.y, min.z), new Vector3(min.x, min.y, max.z),
+                new Vector3(min.x, max.y, min.z), new Vector3(min.x, max.y, max.z),
+                new Vector3(max.x, min.y, min.z), new Vector3(max.x, min.y, max.z),
+                new Vector3(max.x, max.y, min.z), new Vector3(max.x, max.y, max.z),
+            };
+            foreach (var c in corners)
+            {
+                Vector3 world = f.transform.TransformPoint(c);
+                if (first) { bounds = new Bounds(world, Vector3.zero); first = false; }
+                else bounds.Encapsulate(world);
+            }
+        }
+
+        Vector3 offset = modelRoot.transform.position - bounds.center;
+        foreach (Transform child in modelRoot.transform)
+            child.position += offset;
+
+        Debug.Log($"[ModelSelector] CenterPivot: bounds center was {bounds.center}, offset={offset}, size={bounds.size}");
     }
 
     private void ScaleModelToTargetSize(GameObject modelRoot)
     {
-        // Compute bounds at current scale
-        var bounds = ComputeLocalBounds(modelRoot);
+        var bounds = ComputeBounds(modelRoot);
         float maxExtent = Mathf.Max(bounds.size.x, bounds.size.y, bounds.size.z);
-
         if (maxExtent <= 0f) return;
 
         float scaleFactor = _targetSize / maxExtent;
-        scaleFactor = Mathf.Clamp(scaleFactor, _minScale, _maxScale);
-
         modelRoot.transform.localScale = Vector3.one * scaleFactor;
 
-        Debug.Log($"[ModelSelector] Scaled '{modelRoot.name}' by {scaleFactor:F4} " +
-                  $"(original extent: {maxExtent:F2}m → target: {_targetSize:F2}m)");
+        Debug.Log($"[ModelSelector] Scaled '{modelRoot.name}' by {scaleFactor:F6} " +
+                  $"(original extent: {maxExtent:F2}m → target: {_targetSize:F2}m, " +
+                  $"geometry_unit_in_meter will be {scaleFactor:F6})");
     }
 
     private void PlaceInFrontOfCamera(GameObject modelRoot)
@@ -322,58 +361,23 @@ public class ModelSelector : MonoBehaviour
                 cam = mgr.MainCamera;
         }
 
-        var bounds = ComputeBounds(modelRoot);
+        // Always place at fixed distance — user adjusts with pinch
+        float distance = _placementDistance;
+
         Vector3 targetPos;
-
         if (cam != null)
-        {
-            // Always place relative to current camera position/direction
-            targetPos = cam.transform.position + cam.transform.forward * _placementDistance;
-        }
+            targetPos = cam.transform.position + cam.transform.forward * distance;
         else
-        {
-            targetPos = new Vector3(0, 0, _placementDistance);
-        }
+            targetPos = new Vector3(0, 0, distance);
 
-        // Offset so bounds center aligns with target position
-        Vector3 offset = targetPos - bounds.center;
-        modelRoot.transform.position += offset;
+        // Use root position directly (CenterPivotOnBounds already aligned it with bounds center)
+        modelRoot.transform.position = targetPos;
 
-        Debug.Log($"[ModelSelector] Placed '{modelRoot.name}' at {modelRoot.transform.position} " +
-                  $"(cam: {(cam != null ? cam.transform.position.ToString() : "null")}, bounds center: {bounds.center}, size: {bounds.size})");
-    }
+        // Ensure camera can see distant/large models
+        if (cam != null && cam.farClipPlane < 1000f)
+            cam.farClipPlane = 1000f;
 
-    private Transform EnsureVisualPivot(GameObject modelRoot)
-    {
-        var existingPivot = modelRoot.transform.Find(VisualPivotName);
-        if (existingPivot != null)
-            return existingPivot;
-
-        var visualChildren = modelRoot.transform.Cast<Transform>()
-            .Where(IsVisualRootCandidate)
-            .ToArray();
-        if (visualChildren.Length == 0)
-            return null;
-
-        var bounds = ComputeLocalBounds(modelRoot);
-        var pivotObject = new GameObject(VisualPivotName);
-        var pivot = pivotObject.transform;
-        pivot.SetParent(modelRoot.transform, false);
-        pivot.localPosition = bounds.center;
-        pivot.localRotation = Quaternion.identity;
-        pivot.localScale = Vector3.one;
-
-        foreach (var child in visualChildren)
-            child.SetParent(pivot, true);
-
-        return pivot;
-    }
-
-    private static bool IsVisualRootCandidate(Transform child)
-    {
-        if (child == null) return false;
-        if (child.name == "Viewpoint" || child.name == VisualPivotName) return false;
-        return child.GetComponentInChildren<Renderer>(true) != null;
+        Debug.Log($"[ModelSelector] Placed '{modelRoot.name}' at {targetPos}, dist={distance:F2}m");
     }
 
     /// <summary>
@@ -452,15 +456,7 @@ public class ModelSelector : MonoBehaviour
         return null;
     }
 
-    private void SetOutlineProperties(TrackedBodyOutline outline)
-    {
-        // IL2CPP-safe: use reflection with Preserve to avoid stripping
-        SetFieldSafe(outline, "_creaseAngle", _creaseAngle);
-        SetFieldSafe(outline, "_showInternalEdges", _showInternalEdges);
-        SetFieldSafe(outline, "_hideSourceMesh", _hideSourceMesh);
-        SetFieldSafe(outline, "_edgeWidth", _edgeWidth);
-        SetFieldSafe(outline, "_edgeColor", _edgeColor);
-    }
+    // ── Mobile-optimized Runtime UI ──
 
     [UnityEngine.Scripting.Preserve]
     private static void SetFieldSafe(object target, string fieldName, object value)
@@ -482,73 +478,31 @@ public class ModelSelector : MonoBehaviour
         Debug.LogWarning($"[ModelSelector] Field '{fieldName}' not found on {target.GetType().Name}");
     }
 
-    /// <summary>
-    /// Fallback: directly disable MeshRenderers if _hideSourceMesh is on.
-    /// Called after outline is added, in case reflection fails on IL2CPP.
-    /// </summary>
-    private void HideSourceMeshRenderers(GameObject modelRoot)
-    {
-        if (!_hideSourceMesh) return;
-        foreach (var renderer in modelRoot.GetComponentsInChildren<MeshRenderer>(true))
-            renderer.enabled = false;
-    }
-
     private static Bounds ComputeBounds(GameObject root)
     {
-        var renderers = root.GetComponentsInChildren<Renderer>(true);
-        if (renderers.Length == 0)
-            return new Bounds(root.transform.position, Vector3.one * 0.1f);
-
-        Bounds bounds = renderers[0].bounds;
-        for (int i = 1; i < renderers.Length; i++)
-            bounds.Encapsulate(renderers[i].bounds);
-
-        return bounds;
-    }
-
-    /// <summary>
-    /// Compute bounds in local space (before scaling) using mesh bounds.
-    /// </summary>
-    private static Bounds ComputeLocalBounds(GameObject root)
-    {
+        // Use MeshFilter.sharedMesh.bounds — reliable before first render (unlike Renderer.bounds)
         var filters = root.GetComponentsInChildren<MeshFilter>(true);
         if (filters.Length == 0)
-            return new Bounds(Vector3.zero, Vector3.one * 0.1f);
+            return new Bounds(root.transform.position, Vector3.one * 0.1f);
 
         bool first = true;
         Bounds bounds = new Bounds();
         foreach (var f in filters)
         {
             if (f.sharedMesh == null) continue;
-            var meshBounds = f.sharedMesh.bounds;
-
-            // Transform mesh bounds corners to root local space
-            var meshTransform = f.transform;
-            Vector3 min = meshBounds.min;
-            Vector3 max = meshBounds.max;
-
-            // All 8 corners of the mesh AABB
-            Vector3[] corners = new Vector3[8]
-            {
+            var mb = f.sharedMesh.bounds;
+            Vector3 min = mb.min, max = mb.max;
+            Vector3[] corners = {
                 new Vector3(min.x, min.y, min.z), new Vector3(min.x, min.y, max.z),
                 new Vector3(min.x, max.y, min.z), new Vector3(min.x, max.y, max.z),
                 new Vector3(max.x, min.y, min.z), new Vector3(max.x, min.y, max.z),
                 new Vector3(max.x, max.y, min.z), new Vector3(max.x, max.y, max.z),
             };
-
-            foreach (var corner in corners)
+            foreach (var c in corners)
             {
-                Vector3 worldCorner = meshTransform.TransformPoint(corner);
-                Vector3 localCorner = root.transform.InverseTransformPoint(worldCorner);
-                if (first)
-                {
-                    bounds = new Bounds(localCorner, Vector3.zero);
-                    first = false;
-                }
-                else
-                {
-                    bounds.Encapsulate(localCorner);
-                }
+                Vector3 world = f.transform.TransformPoint(c);
+                if (first) { bounds = new Bounds(world, Vector3.zero); first = false; }
+                else bounds.Encapsulate(world);
             }
         }
 
@@ -595,6 +549,27 @@ public class ModelSelector : MonoBehaviour
     private void Update()
     {
         DetectSwipe();
+
+        // Debug overlay
+        if (_currentModelInstance != null)
+        {
+            var cam = Camera.main;
+            var renderers = _currentModelInstance.GetComponentsInChildren<Renderer>(true);
+            int visible = 0, hidden = 0;
+            foreach (var r in renderers)
+            {
+                if (r.enabled && !r.forceRenderingOff) visible++;
+                else hidden++;
+            }
+            var pos = _currentModelInstance.transform.position;
+            float dist = cam != null ? Vector3.Distance(cam.transform.position, pos) : -1f;
+            _debugText = $"Model: {_currentModelInstance.name}\n" +
+                         $"Pos: {pos}\n" +
+                         $"Scale: {_currentModelInstance.transform.localScale}\n" +
+                         $"Dist to cam: {dist:F2}m\n" +
+                         $"Renderers: {visible} vis, {hidden} hid\n" +
+                         $"farClip: {cam?.farClipPlane:F1} fov: {cam?.fieldOfView:F1}";
+        }
     }
 
     private void DetectSwipe()
@@ -621,6 +596,12 @@ public class ModelSelector : MonoBehaviour
 
     private void OnGUI()
     {
+        // Debug overlay
+        GUI.skin.label.fontSize = 24;
+        GUI.color = Color.yellow;
+        GUI.Label(new Rect(10, 200, Screen.width - 20, 350), _debugText);
+        GUI.color = Color.white;
+
         if (_modelNames.Count == 0) return;
 
         InitStyles();

@@ -26,11 +26,22 @@ public class TouchManipulator : MonoBehaviour
     bool _twoActive;
     Vector3 _mousePrev;
     TrackedBody _body;
+    float _boundsSize = 1f;
 
     void Start()
     {
         _body = GetComponent<TrackedBody>();
         RecomputePivot();
+        ComputeBoundsSize();
+    }
+
+    void ComputeBoundsSize()
+    {
+        var renderers = GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0) { _boundsSize = 1f; return; }
+        var b = renderers[0].bounds;
+        for (int i = 1; i < renderers.Length; i++) b.Encapsulate(renderers[i].bounds);
+        _boundsSize = Mathf.Max(b.size.magnitude, 0.01f);
     }
 
     public void RecomputePivot()
@@ -123,12 +134,13 @@ public class TouchManipulator : MonoBehaviour
             if (!_twoActive || a.phase == TouchPhase.Began || b.phase == TouchPhase.Began)
             { _pinchPrev = d; _midPrev = mid; _anglePrev = angle; _twoActive = true; return false; }
 
-            // Pinch → scale
-            float scaleRatio = d / Mathf.Max(_pinchPrev, 0.01f);
-            float s = Mathf.Clamp(transform.localScale.x * scaleRatio, minScale, maxScale);
-            transform.localScale = Vector3.one * s;
+            // Pinch → move closer/farther (along camera forward axis)
+            float pinchDelta = d - _pinchPrev;
+            float distToCam = Mathf.Max(Vector3.Distance(cam.transform.position, transform.position), 0.1f);
+            float moveAmount = pinchDelta * -distToCam / Screen.height;
+            transform.position += cam.transform.forward * moveAmount;
 
-            // Two-finger drag → move
+            // Two-finger drag → move (perpendicular to camera)
             Vector3 screen = cam.WorldToScreenPoint(PivotWorld);
             screen.x += (mid - _midPrev).x;
             screen.y += (mid - _midPrev).y;
