@@ -15,6 +15,10 @@ public class TrackingStatsHUD : MonoBehaviour
     Text _edgeText;
     Text _visibilityText;
     Image _scoreFill;
+    Slider _startSlider;
+    Slider _stopSlider;
+    Text _startValueText;
+    Text _stopValueText;
 
     void OnEnable()
     {
@@ -56,7 +60,7 @@ public class TrackingStatsHUD : MonoBehaviour
             new Vector2(0f, 1f),
             new Vector2(0f, 1f),
             anchor,
-            new Vector2(400f, 280f),
+            new Vector2(400f, 520f),
             new Color(0.04f, 0.08f, 0.11f, 0.82f));
 
         var layout = _panelRoot.gameObject.AddComponent<VerticalLayoutGroup>();
@@ -77,6 +81,40 @@ public class TrackingStatsHUD : MonoBehaviour
         _projectionText = RuntimeUIFactory.CreateText(_panelRoot, "Projection", "Projection Error: -", 18, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 24f);
         _edgeText = RuntimeUIFactory.CreateText(_panelRoot, "Edge", "Edge Coverage: -", 18, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 24f);
         _visibilityText = RuntimeUIFactory.CreateText(_panelRoot, "Visibility", "Visibility: -", 18, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 24f);
+
+        // Threshold sliders
+        RuntimeUIFactory.CreateText(_panelRoot, "Threshold Title", "THRESHOLDS", 22, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, 30f);
+
+        _startValueText = RuntimeUIFactory.CreateText(_panelRoot, "Start Value", "Start: 50%", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.86f, 0.93f, 1f), 24f);
+        _startSlider = RuntimeUIFactory.CreateSlider(_panelRoot, "Start Slider", new Color(1f, 1f, 1f, 0.14f), new Color(0.22f, 0.9f, 0.66f, 0.95f), Color.white, 24f);
+        _startSlider.minValue = 0f;
+        _startSlider.maxValue = 1f;
+        _startSlider.value = trackedBody != null ? trackedBody.CustomQualityToStart : 0.5f;
+        _startSlider.onValueChanged.AddListener(v =>
+        {
+            if (trackedBody != null) trackedBody.CustomQualityToStart = v;
+            _startValueText.text = $"Start: {Mathf.RoundToInt(v * 100f)}%";
+        });
+
+        _stopValueText = RuntimeUIFactory.CreateText(_panelRoot, "Stop Value", "Stop: 50%", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.86f, 0.93f, 1f), 24f);
+        _stopSlider = RuntimeUIFactory.CreateSlider(_panelRoot, "Stop Slider", new Color(1f, 1f, 1f, 0.14f), new Color(0.22f, 0.9f, 0.66f, 0.95f), Color.white, 24f);
+        _stopSlider.minValue = 0f;
+        _stopSlider.maxValue = 1f;
+        _stopSlider.value = trackedBody != null ? trackedBody.CustomQualityToStop : 0.5f;
+        _stopSlider.onValueChanged.AddListener(v =>
+        {
+            if (trackedBody != null) trackedBody.CustomQualityToStop = v;
+            _stopValueText.text = $"Stop: {Mathf.RoundToInt(v * 100f)}%";
+        });
+
+        var resetButton = RuntimeUIFactory.CreateButton(_panelRoot, "Reset Tracking", "RESET TRACKING", new Color(0.89f, 0.39f, 0.24f, 0.95f), Color.white, 50f);
+        resetButton.onClick.AddListener(() =>
+        {
+            // Use ModelSelector's safe scene reload (handles native tracker shutdown timing)
+            var selector = FindAnyObjectByType<ModelSelector>();
+            if (selector != null)
+                selector.ReloadCurrentModel();
+        });
     }
 
     void RefreshStats()

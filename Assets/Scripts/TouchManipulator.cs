@@ -1,4 +1,5 @@
 using UnityEngine;
+using IV.FormulaTracker;
 
 [DefaultExecutionOrder(20000)]
 public class TouchManipulator : MonoBehaviour
@@ -21,11 +22,14 @@ public class TouchManipulator : MonoBehaviour
     Vector3 _pivotLocal;
     float _pinchPrev;
     Vector2 _midPrev;
+    float _anglePrev;
     bool _twoActive;
     Vector3 _mousePrev;
+    TrackedBody _body;
 
     void Start()
     {
+        _body = GetComponent<TrackedBody>();
         RecomputePivot();
     }
 
@@ -57,10 +61,23 @@ public class TouchManipulator : MonoBehaviour
         if (cam == null) cam = Camera.main;
         if (cam == null) return;
 
+        // When TrackedBody is actively tracking, SDK controls the transform — skip manipulation
+        if (_body != null && _body.IsTracking)
+            return;
+
+        bool hadInput = false;
+
         HandleKeys();
 
-        if (Input.touchCount > 0) HandleTouch();
-        else HandleMouse();
+        if (Input.touchCount > 0) hadInput = HandleTouch();
+        else hadInput = HandleMouse() || hadInput;
+
+        // After user manipulates the model, update the detection pose so SDK
+        // uses this new orientation for its next ApplyDetectorPose call
+        if (hadInput && _body != null && _body.IsRegistered && !_body.IsTracking)
+        {
+            _body.SetInitialPose(cam.transform);
+        }
     }
 
     void HandleKeys()
@@ -92,29 +109,39 @@ public class TouchManipulator : MonoBehaviour
             transform.position += move.normalized * keyMovePerSec * dt;
     }
 
-    void HandleTouch()
+    bool HandleTouch()
     {
+        bool moved = false;
         int n = Input.touchCount;
         if (n >= 2)
         {
             Touch a = Input.GetTouch(0), b = Input.GetTouch(1);
             float d = Vector2.Distance(a.position, b.position);
             Vector2 mid = (a.position + b.position) * 0.5f;
+            float angle = Mathf.Atan2(b.position.y - a.position.y, b.position.x - a.position.x) * Mathf.Rad2Deg;
 
             if (!_twoActive || a.phase == TouchPhase.Began || b.phase == TouchPhase.Began)
-            { _pinchPrev = d; _midPrev = mid; _twoActive = true; return; }
+            { _pinchPrev = d; _midPrev = mid; _anglePrev = angle; _twoActive = true; return false; }
 
+            // Pinch → scale
             float scaleRatio = d / Mathf.Max(_pinchPrev, 0.01f);
             float s = Mathf.Clamp(transform.localScale.x * scaleRatio, minScale, maxScale);
             transform.localScale = Vector3.one * s;
 
+            // Two-finger drag → move
             Vector3 screen = cam.WorldToScreenPoint(PivotWorld);
             screen.x += (mid - _midPrev).x;
             screen.y += (mid - _midPrev).y;
             Vector3 newPivotWorld = cam.ScreenToWorldPoint(screen);
             transform.position += (newPivotWorld - PivotWorld);
 
-            _pinchPrev = d; _midPrev = mid;
+            // Two-finger twist → rotate around camera forward
+            float angleDelta = Mathf.DeltaAngle(_anglePrev, angle);
+            if (Mathf.Abs(angleDelta) > 0.1f)
+                transform.RotateAround(PivotWorld, cam.transform.forward, angleDelta);
+
+            _pinchPrev = d; _midPrev = mid; _anglePrev = angle;
+            moved = true;
         }
         else if (n == 1)
         {
@@ -125,13 +152,16 @@ public class TouchManipulator : MonoBehaviour
                 Vector3 piv = PivotWorld;
                 transform.RotateAround(piv, cam.transform.up, -t.deltaPosition.x * rotateSpeed);
                 transform.RotateAround(piv, cam.transform.right, t.deltaPosition.y * rotateSpeed);
+                moved = true;
             }
         }
         else { _twoActive = false; _pinchPrev = 0f; }
+        return moved;
     }
 
-    void HandleMouse()
+    bool HandleMouse()
     {
+        bool moved = false;
         Vector3 mouse = Input.mousePosition;
         if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1) || Input.GetMouseButtonDown(2))
             _mousePrev = mouse;
@@ -143,6 +173,7 @@ public class TouchManipulator : MonoBehaviour
             Vector3 piv = PivotWorld;
             transform.RotateAround(piv, cam.transform.up, -delta.x * mouseRotateSpeed);
             transform.RotateAround(piv, cam.transform.right, delta.y * mouseRotateSpeed);
+            moved = delta.sqrMagnitude > 0.01f;
         }
         else if (Input.GetMouseButton(1) || Input.GetMouseButton(2))
         {
@@ -151,6 +182,7 @@ public class TouchManipulator : MonoBehaviour
             screen.y += delta.y * mouseMoveSpeed;
             Vector3 newPivotWorld = cam.ScreenToWorldPoint(screen);
             transform.position += (newPivotWorld - PivotWorld);
+            moved = delta.sqrMagnitude > 0.01f;
         }
 
         float scroll = Input.GetAxis("Mouse ScrollWheel");
@@ -158,8 +190,10 @@ public class TouchManipulator : MonoBehaviour
         {
             float s = Mathf.Clamp(transform.localScale.x * (1f + scroll * scrollScaleSpeed * 10f), minScale, maxScale);
             transform.localScale = Vector3.one * s;
+            moved = true;
         }
 
         _mousePrev = mouse;
+        return moved;
     }
 }
