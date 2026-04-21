@@ -55,6 +55,21 @@ public class ModelSelector : MonoBehaviour
     private int _currentIndex = -1;
     private GameObject _currentModelInstance;
 
+    // Persist user-adjusted thresholds across model reloads
+    private float _qualityToStart = 0.8f;
+    private float _qualityToStop = 0.5f;
+
+    public float QualityToStart
+    {
+        get => _qualityToStart;
+        set => _qualityToStart = Mathf.Clamp01(value);
+    }
+    public float QualityToStop
+    {
+        get => _qualityToStop;
+        set => _qualityToStop = Mathf.Clamp01(value);
+    }
+
     public IReadOnlyList<string> ModelNames => _modelNames;
     public int CurrentIndex => _currentIndex;
     public string CurrentModelName => _currentIndex >= 0 && _currentIndex < _modelNames.Count
@@ -268,9 +283,9 @@ public class ModelSelector : MonoBehaviour
         body.RotationStability = _rotationStability;
         body.PositionStability = _positionStability;
         body.UseCustomStartThreshold = true;
-        body.CustomQualityToStart = 0.5f;
+        body.CustomQualityToStart = _qualityToStart;
         body.UseCustomStopThreshold = true;
-        body.CustomQualityToStop = 0.5f;
+        body.CustomQualityToStop = _qualityToStop;
         modelRoot.SetActive(true);
 
         body.SetInitialPose(viewpoint.transform);

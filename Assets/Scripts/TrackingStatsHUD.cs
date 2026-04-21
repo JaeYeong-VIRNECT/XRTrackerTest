@@ -85,14 +85,16 @@ public class TrackingStatsHUD : MonoBehaviour
         // Threshold sliders
         RuntimeUIFactory.CreateText(_panelRoot, "Threshold Title", "THRESHOLDS", 22, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, 30f);
 
-        _startValueText = RuntimeUIFactory.CreateText(_panelRoot, "Start Value", "Start: 50%", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.86f, 0.93f, 1f), 24f);
+        _startValueText = RuntimeUIFactory.CreateText(_panelRoot, "Start Value", "Start: 80%", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.86f, 0.93f, 1f), 24f);
         _startSlider = RuntimeUIFactory.CreateSlider(_panelRoot, "Start Slider", new Color(1f, 1f, 1f, 0.14f), new Color(0.22f, 0.9f, 0.66f, 0.95f), Color.white, 24f);
         _startSlider.minValue = 0f;
         _startSlider.maxValue = 1f;
-        _startSlider.value = trackedBody != null ? trackedBody.CustomQualityToStart : 0.5f;
+        _startSlider.value = trackedBody != null ? trackedBody.CustomQualityToStart : 0.8f;
         _startSlider.onValueChanged.AddListener(v =>
         {
             if (trackedBody != null) trackedBody.CustomQualityToStart = v;
+            var sel = FindAnyObjectByType<ModelSelector>();
+            if (sel != null) sel.QualityToStart = v;
             _startValueText.text = $"Start: {Mathf.RoundToInt(v * 100f)}%";
         });
 
@@ -104,6 +106,8 @@ public class TrackingStatsHUD : MonoBehaviour
         _stopSlider.onValueChanged.AddListener(v =>
         {
             if (trackedBody != null) trackedBody.CustomQualityToStop = v;
+            var sel = FindAnyObjectByType<ModelSelector>();
+            if (sel != null) sel.QualityToStop = v;
             _stopValueText.text = $"Stop: {Mathf.RoundToInt(v * 100f)}%";
         });
 
