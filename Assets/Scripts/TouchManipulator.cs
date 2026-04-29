@@ -1,9 +1,24 @@
+using System.Collections.Generic;
 using UnityEngine;
 using IV.FormulaTracker;
 
 [DefaultExecutionOrder(20000)]
 public class TouchManipulator : MonoBehaviour
 {
+    /// <summary>
+    /// Screen-space rects (GUI coords, top-left origin) that swallow touches.
+    /// UI scripts populate this each frame; manipulator skips input over any registered rect.
+    /// </summary>
+    public static readonly List<Rect> BlockedRects = new List<Rect>();
+
+    public static bool IsScreenPointBlocked(Vector2 screenPos)
+    {
+        Vector2 guiPos = new Vector2(screenPos.x, Screen.height - screenPos.y);
+        for (int i = 0; i < BlockedRects.Count; i++)
+            if (BlockedRects[i].Contains(guiPos)) return true;
+        return false;
+    }
+
     [SerializeField] private Camera cam;
     [SerializeField] private float rotateSpeed = 0.3f;
     [SerializeField] private float mouseRotateSpeed = 0.3f;
@@ -27,6 +42,11 @@ public class TouchManipulator : MonoBehaviour
     Vector3 _mousePrev;
     TrackedBody _body;
     float _boundsSize = 1f;
+
+    // Per-finger lock: any touch that BEGAN over UI is ignored for its entire lifetime,
+    // even if the finger drags off the UI. Cleared on Ended/Canceled.
+    readonly HashSet<int> _uiLockedFingers = new HashSet<int>();
+    bool _mouseLockedToUi;
 
     void Start()
     {
@@ -124,9 +144,37 @@ public class TouchManipulator : MonoBehaviour
     {
         bool moved = false;
         int n = Input.touchCount;
+
+        // Update per-finger UI lock state. Once a touch begins on UI, mark the finger
+        // and ignore it until Ended/Canceled — prevents drag-off-UI from rotating.
+        for (int i = 0; i < n; i++)
+        {
+            Touch t = Input.GetTouch(i);
+            if (t.phase == TouchPhase.Began)
+            {
+                if (IsScreenPointBlocked(t.position) || InIgnoreEdge(t.position))
+                    _uiLockedFingers.Add(t.fingerId);
+            }
+            else if (t.phase == TouchPhase.Ended || t.phase == TouchPhase.Canceled)
+            {
+                _uiLockedFingers.Remove(t.fingerId);
+            }
+        }
+
+        // If ANY active finger is locked to UI, ignore all manipulation this frame
+        for (int i = 0; i < n; i++)
+        {
+            if (_uiLockedFingers.Contains(Input.GetTouch(i).fingerId))
+            { _twoActive = false; _pinchPrev = 0f; return false; }
+        }
+
         if (n >= 2)
         {
             Touch a = Input.GetTouch(0), b = Input.GetTouch(1);
+            // Block when either finger is over a UI panel
+            if (IsScreenPointBlocked(a.position) || IsScreenPointBlocked(b.position))
+            { _twoActive = false; _pinchPrev = 0f; return false; }
+
             float d = Vector2.Distance(a.position, b.position);
             Vector2 mid = (a.position + b.position) * 0.5f;
             float angle = Mathf.Atan2(b.position.y - a.position.y, b.position.x - a.position.x) * Mathf.Rad2Deg;
@@ -159,7 +207,7 @@ public class TouchManipulator : MonoBehaviour
         {
             _twoActive = false; _pinchPrev = 0f;
             Touch t = Input.GetTouch(0);
-            if (t.phase == TouchPhase.Moved && !InIgnoreEdge(t.position))
+            if (t.phase == TouchPhase.Moved && !InIgnoreEdge(t.position) && !IsScreenPointBlocked(t.position))
             {
                 Vector3 piv = PivotWorld;
                 transform.RotateAround(piv, cam.transform.up, -t.deltaPosition.x * rotateSpeed);
@@ -176,18 +224,26 @@ public class TouchManipulator : MonoBehaviour
         bool moved = false;
         Vector3 mouse = Input.mousePosition;
         if (Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1) || Input.GetMouseButtonDown(2))
+        {
             _mousePrev = mouse;
+            // Lock mouse drag to UI if pressed over UI; cleared on release
+            _mouseLockedToUi = IsScreenPointBlocked(mouse) || InIgnoreEdge(mouse);
+        }
+        if (!Input.GetMouseButton(0) && !Input.GetMouseButton(1) && !Input.GetMouseButton(2))
+            _mouseLockedToUi = false;
 
         Vector3 delta = mouse - _mousePrev;
 
-        if (Input.GetMouseButton(0) && !InIgnoreEdge(mouse))
+        if (_mouseLockedToUi) { _mousePrev = mouse; return false; }
+
+        if (Input.GetMouseButton(0) && !InIgnoreEdge(mouse) && !IsScreenPointBlocked(mouse))
         {
             Vector3 piv = PivotWorld;
             transform.RotateAround(piv, cam.transform.up, -delta.x * mouseRotateSpeed);
             transform.RotateAround(piv, cam.transform.right, delta.y * mouseRotateSpeed);
             moved = delta.sqrMagnitude > 0.01f;
         }
-        else if (Input.GetMouseButton(1) || Input.GetMouseButton(2))
+        else if ((Input.GetMouseButton(1) || Input.GetMouseButton(2)) && !IsScreenPointBlocked(mouse))
         {
             Vector3 screen = cam.WorldToScreenPoint(PivotWorld);
             screen.x += delta.x * mouseMoveSpeed;

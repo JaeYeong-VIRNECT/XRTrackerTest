@@ -8,17 +8,12 @@ public class TrackingStatsHUD : MonoBehaviour
     [SerializeField] private Vector2 anchor = new Vector2(24, -24);
 
     RectTransform _panelRoot;
-    Text _licenseText;
     Text _statusText;
     Text _scoreText;
     Text _projectionText;
     Text _edgeText;
     Text _visibilityText;
     Image _scoreFill;
-    Slider _startSlider;
-    Slider _stopSlider;
-    Text _startValueText;
-    Text _stopValueText;
 
     void OnEnable()
     {
@@ -60,7 +55,7 @@ public class TrackingStatsHUD : MonoBehaviour
             new Vector2(0f, 1f),
             new Vector2(0f, 1f),
             anchor,
-            new Vector2(400f, 520f),
+            new Vector2(400f, 320f),
             new Color(0.04f, 0.08f, 0.11f, 0.82f));
 
         var layout = _panelRoot.gameObject.AddComponent<VerticalLayoutGroup>();
@@ -77,54 +72,14 @@ public class TrackingStatsHUD : MonoBehaviour
         RuntimeUIFactory.CreateFillBar(_panelRoot, "Score Bar", new Color(1f, 1f, 1f, 0.14f), new Color(0.23f, 0.92f, 0.7f), out _scoreFill, 20f);
 
         _statusText = RuntimeUIFactory.CreateText(_panelRoot, "Status", "Status: waiting", 20, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 26f);
-        _licenseText = RuntimeUIFactory.CreateText(_panelRoot, "License", "License: waiting", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.78f, 0.86f, 0.94f), 24f);
         _projectionText = RuntimeUIFactory.CreateText(_panelRoot, "Projection", "Projection Error: -", 18, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 24f);
         _edgeText = RuntimeUIFactory.CreateText(_panelRoot, "Edge", "Edge Coverage: -", 18, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 24f);
         _visibilityText = RuntimeUIFactory.CreateText(_panelRoot, "Visibility", "Visibility: -", 18, FontStyle.Normal, TextAnchor.MiddleLeft, Color.white, 24f);
-
-        // Threshold sliders
-        RuntimeUIFactory.CreateText(_panelRoot, "Threshold Title", "THRESHOLDS", 22, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white, 30f);
-
-        _startValueText = RuntimeUIFactory.CreateText(_panelRoot, "Start Value", "Start: 80%", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.86f, 0.93f, 1f), 24f);
-        _startSlider = RuntimeUIFactory.CreateSlider(_panelRoot, "Start Slider", new Color(1f, 1f, 1f, 0.14f), new Color(0.22f, 0.9f, 0.66f, 0.95f), Color.white, 24f);
-        _startSlider.minValue = 0f;
-        _startSlider.maxValue = 1f;
-        _startSlider.value = trackedBody != null ? trackedBody.CustomQualityToStart : 0.8f;
-        _startSlider.onValueChanged.AddListener(v =>
-        {
-            if (trackedBody != null) trackedBody.CustomQualityToStart = v;
-            var sel = FindAnyObjectByType<ModelSelector>();
-            if (sel != null) sel.QualityToStart = v;
-            _startValueText.text = $"Start: {Mathf.RoundToInt(v * 100f)}%";
-        });
-
-        _stopValueText = RuntimeUIFactory.CreateText(_panelRoot, "Stop Value", "Stop: 50%", 18, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.86f, 0.93f, 1f), 24f);
-        _stopSlider = RuntimeUIFactory.CreateSlider(_panelRoot, "Stop Slider", new Color(1f, 1f, 1f, 0.14f), new Color(0.22f, 0.9f, 0.66f, 0.95f), Color.white, 24f);
-        _stopSlider.minValue = 0f;
-        _stopSlider.maxValue = 1f;
-        _stopSlider.value = trackedBody != null ? trackedBody.CustomQualityToStop : 0.5f;
-        _stopSlider.onValueChanged.AddListener(v =>
-        {
-            if (trackedBody != null) trackedBody.CustomQualityToStop = v;
-            var sel = FindAnyObjectByType<ModelSelector>();
-            if (sel != null) sel.QualityToStop = v;
-            _stopValueText.text = $"Stop: {Mathf.RoundToInt(v * 100f)}%";
-        });
-
-        var resetButton = RuntimeUIFactory.CreateButton(_panelRoot, "Reset Tracking", "RESET TRACKING", new Color(0.89f, 0.39f, 0.24f, 0.95f), Color.white, 50f);
-        resetButton.onClick.AddListener(() =>
-        {
-            // Use ModelSelector's safe scene reload (handles native tracker shutdown timing)
-            var selector = FindAnyObjectByType<ModelSelector>();
-            if (selector != null)
-                selector.ReloadCurrentModel();
-        });
     }
 
     void RefreshStats()
     {
         if (_panelRoot == null ||
-            _licenseText == null ||
             _statusText == null ||
             _scoreText == null ||
             _projectionText == null ||
@@ -135,16 +90,10 @@ public class TrackingStatsHUD : MonoBehaviour
         if (trackedBody == null)
         {
             _statusText.text = "Status: no TrackedBody";
-            _licenseText.text = "License: manager not found";
             _scoreText.text = "0%";
             SetScoreVisuals(0f);
             return;
         }
-
-        var manager = XRTrackerManager.Instance;
-        _licenseText.text = manager == null
-            ? "License: manager not found"
-            : $"License: {manager.LicenseTier} / {manager.LicenseStatus}";
 
         float projectionError = trackedBody.ProjectionErrorAverage;
         float edgeCoverage = trackedBody.EdgeCoverageAverage;
